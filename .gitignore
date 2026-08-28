@@ -1,0 +1,7 @@
+# sentinel output written by dispatch/relay
+.agent-runs/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
