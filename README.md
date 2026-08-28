@@ -2,124 +2,117 @@
 
 *[English](README.md) · [简体中文](README.zh-CN.md)*
 
-**Run any coding-agent CLI as a detached background worker on a git worktree — and be able
-to prove, afterwards, what it actually did.**
+**A skill that teaches your coding agent to delegate long work to other agent CLIs — and to
+prove, afterwards, what they actually did.**
 
-One entry point for `codex`, `cursor-agent`, `codebuddy`, and `claude`. Each run writes the
-same four-file sentinel, so its state is answerable from disk instead of from the agent's
-own summary of itself.
+Your agent already knows how to write code. What it does not know is how to hand three hours
+of work to `codex` or `cursor-agent`, walk away, and come back able to tell the difference
+between *finished*, *finished but produced nothing*, *died on credentials*, and *lying about
+a test it never ran*. This skill is that knowledge, packaged.
 
-## Why
+Install it and your agent gains a working method: isolate the work in a git worktree,
+dispatch a detached CLI worker, watch a four-file sentinel, and refuse to believe any claim
+it can check itself.
 
-A subagent shares your context budget and your turn. A detached CLI worker does neither: it
-gets its own window, keeps running after your turn ends, and costs you only the brief you
-write and the result you read.
-
-The hard part was never launching one. It is everything after:
-
-- A worktree whose `.git` pointer went missing resolves **upward to your main repository** —
-  an existence check passes, and the dispatch edits your trunk.
-- A brief passed as a command-line argument makes some CLIs return instantly with an empty
-  log and **exit code 0**, which every monitor reports as success.
-- An upstream auth failure writes a *complete* sentinel, so it reports `DONE`, not `DEAD`.
-- `git rebase` does not fire pre-commit hooks, so "the gate was green after the rebase" is
-  an empty sentence — and the commit timestamps look fine either way.
-- A green static gate and a red test suite coexist happily, if you took the consumer
-  surface by grepping imports.
-- And a lock that guards nothing passes exactly as loudly as one that guards everything.
-
-Every guard in this skill exists because one of those actually happened.
-
-## Quick start
+## Install
 
 ```bash
-# 1. Make a worktree for the work (never dispatch into your trunk)
-git worktree add ../wt-feature -b feature/thing
-
-# 2. Write a brief (templates/brief.md and templates/review.md are starting points)
-cp ~/.agents/skills/agent-delegation/templates/brief.md /tmp/brief.md
-$EDITOR /tmp/brief.md
-
-# 3. Dispatch. The model is required — this skill hard-codes none.
-export AGENT_MODEL=<your-model-id>
-scripts/dispatch.sh --agent codex --name fixthing \
-                    --worktree ../wt-feature --brief /tmp/brief.md
-
-# 4. Watch every run, across every agent, in one command
-scripts/watch.sh
-# DONE codex/fixthing exit=0 result=12268
-# RUNNING cursor/probe log=48213
-
-# 5. Read the deliverable — the notification is a pointer, not the content
-cat ../.agent-runs/codex/fixthing.out
-
-# 6. A reviewer whose findings ARE the next task: resume its session, don't re-brief it
-scripts/relay.sh --agent codex --from review1 --name fix1 \
-                 --worktree ../wt-feature --brief /tmp/fix.md
+npx skills add shaokeyibb/agent-delegation
 ```
 
-PowerShell users: every script has a `.ps1` twin with the same parameters
-(`dispatch.ps1 -Agent codex -Name fixthing -Worktree ..\wt-feature -Brief brief.md`).
+Useful flags: `-g` installs to your user directory instead of the current project,
+`-a claude-code` (repeatable) targets specific agents, `-y` skips confirmation.
+
+```bash
+npx skills add shaokeyibb/agent-delegation -g -a claude-code -y
+```
+
+## Usage
+
+There is nothing to run. Skills load themselves when they are relevant — just talk to your
+agent about the work, and it will reach for this one:
+
+> "This refactor will take hours. Farm it out to codex on a worktree and check on it later."
+
+> "The codex run says DONE but I don't see any output. What happened?"
+
+> "The reviewer found three real bugs. Have it fix them instead of writing a new brief."
+
+> "It claims it added four locks. Verify that before we merge."
+
+Each of those lands in a different part of the skill: dispatching, diagnosing a run that
+reported success while producing nothing, relaying a reviewer into its own fix, and forcing
+a claimed test to be broken and shown going red.
 
 ### Configuration
+
+Set the model before your agent dispatches anything — **the skill hard-codes none**, because
+model ids change and a stale default fails late in a way that looks like a task problem
+rather than a config one.
 
 | variable | meaning |
 |---|---|
 | `AGENT_MODEL` | model id for every lane |
 | `AGENT_MODEL_<AGENT>` | per-lane override, e.g. `AGENT_MODEL_CODEX` |
 | `AGENT_RUNS` | where the sentinel lives (default `<repo>/.agent-runs/<agent>/`) |
-| `AGENT_WATCH_INTERVAL` | poll seconds for `watch-loop.sh` (default 20) |
+| `AGENT_WATCH_INTERVAL` | poll seconds for the watcher (default 20) |
 
-## The one rule everything else serves
+The bundled scripts are plain bash and PowerShell — your agent runs them, but you can too,
+with no agent host at all.
+
+## What your agent learns
+
+**Four CLIs, one interface.** `codex`, `cursor-agent`, `codebuddy`, and `claude` differ in
+ways that fail *silently* if you get them wrong — only one takes the brief on stdin, and the
+other three return instantly with exit code 0 if you pass a large brief as an argument. The
+skill normalises that.
+
+**A sentinel it can read instead of trusting.** Every run writes `.before` (tree snapshot),
+`.log`, `.out` (the deliverable), and `.exit` — written *last*, so its existence is the
+completion signal. An empty `.out` is a failed run no matter what the exit code says.
+
+**One rule everything else serves:**
 
 > **The run that changed the code is never the run that approves it.**
 
-Dispatch a fresh run to review work. Relay a *reviewer* into fixing what it found — that is
-sound, because its review was written and harvested before it gained write access. Relaying
-again to bless its own fix is not.
+Relaying a reviewer into fixing what it found is sound — its review was written and harvested
+*before* it gained write access. Relaying again to bless its own fix is not.
 
-## Where it pays off
+**How to disbelieve a green test suite.** A lock that guards nothing passes exactly as loudly
+as one that guards everything, so the skill makes the agent break the invariant and show it
+going red — with `git diff` proof the mutation actually landed.
 
-**Long refactors you cannot hold in context.** Dispatch, go do something else, harvest a
-diff hours later against a snapshot taken at dispatch time — so a run that quietly
-installed 100 MB of dependencies cannot show you a clean tree.
+## Why it exists
 
-**Review that is not theatre.** The review template demands that a claimed lock be *broken*
-and shown going red, with `git diff` proof the mutation landed. It also asks the durable
-question rather than the convenient proxy: *what invariant does this lock guard — break it,
-does anything go red?* Counting edit sites answers "two" for every string assertion and for
-every equality lock ever written.
+Launching a background worker is easy. Everything after it is where the failures live, and
+every guard in this skill is there because the thing it guards against actually happened:
 
-**Fan-out with an honest ledger.** Run several agents on several worktrees; `watch.sh`
-reports one line per run across all of them, and tells apart *finished with nothing*,
-*died on credentials*, and *still going* — three states that otherwise look identical.
+- A worktree whose `.git` pointer went missing resolves **upward to the main repository** —
+  an existence check passes, and the dispatch edits your trunk.
+- An upstream auth failure writes a *complete* sentinel, so it reports `DONE`, not `DEAD`.
+  The missing deliverable is the only signal.
+- `git rebase` does not fire pre-commit hooks, so "the gate was green after the rebase" is an
+  empty sentence — and because rebase preserves the author date, the timestamps look fine.
+- A `reset --soft` onto a moving trunk can stage the *reverse* of someone else's commit, and
+  nothing goes red.
+- A green static gate and a red test suite coexist happily, if the consumer surface was taken
+  by grepping imports.
 
-**Catching your own briefs being wrong.** Every brief ends by inviting the run to argue
-back. Those rebuttals are frequently right and occasionally, confidently wrong — so the
-skill also tells you to verify them: anything checkable by one command, check yourself.
-
-## Layout
+## What's inside
 
 ```
-agent-delegation/
-├── SKILL.md              the operational guide (read this)
-├── README.md
-├── LICENSE               MIT
-├── scripts/
-│   ├── dispatch.sh/.ps1  launch a run (preflight + sentinel)
-│   ├── relay.sh/.ps1     resume a finished run in its own session
-│   ├── watch.sh          one state line per run, across all agents
-│   └── watch-loop.sh     emit only state changes, for a persistent monitor
-└── templates/
-    ├── brief.md          implementation brief
-    └── review.md         read-only review brief
+SKILL.md              the operational guide your agent reads
+scripts/
+  dispatch.sh/.ps1    launch a run (preflight + sentinel)
+  relay.sh/.ps1       resume a finished run in its own session
+  watch.sh            one state line per run, across all agents
+  watch-loop.sh       emit only state changes, for a persistent monitor
+templates/
+  brief.md            implementation brief
+  review.md           read-only review brief
 ```
 
-## Install
-
-Drop the directory anywhere your agent host discovers skills — for example
-`~/.agents/skills/` with a symlink from `~/.claude/skills/`, or straight into
-`~/.claude/skills/`. The scripts are standalone: they can be run by hand with no host at all.
+Both shells are first-class: every script ships as `.sh` and `.ps1` with identical behaviour.
 
 ## License
 

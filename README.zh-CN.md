@@ -2,115 +2,106 @@
 
 *[English](README.md) · [简体中文](README.zh-CN.md)*
 
-**把任意 coding agent CLI 作为后台工作者派到 git worktree 上跑 —— 并且事后能【证明】它到底做了什么。**
+**一个 Skill：教会你的 coding agent 把长活派给其它 agent CLI —— 并且事后能【证明】它们到底做了什么。**
 
-`codex`、`cursor-agent`、`codebuddy`、`claude` 四条通路，一个入口。每次运行都写同一份四文件
-哨兵，所以它的状态**从磁盘上就能答出来**，不必依赖 agent 对自己的复述。
+你的 agent 早就会写代码。它不会的是：把三小时的活交给 `codex` 或 `cursor-agent`，转身去忙别的，
+回来之后还能分清**跑完了**、**跑完了但什么都没产出**、**死在鉴权上**、以及**声称跑了一个它
+根本没跑的测试**。这个 Skill 就是把这套本事打包起来。
 
-## 为什么需要它
+装上之后，你的 agent 就有了一套可用的工作方法：把活隔离到 git worktree 里、派出后台 CLI 工作者、
+盯住一份四文件哨兵，并且**凡是它自己能核的说法，一律不轻信**。
 
-子代理（subagent）占用你的上下文预算和当前这一轮对话；后台 CLI 工作者两样都不占：它有自己的
-窗口，在你这一轮结束后继续跑，代价只有你写的任务书和你读的结果。
-
-难的从来不是把它启动起来，而是启动之后的一切：
-
-- 一棵 `.git` 指针丢失的 worktree 会**向上解析到你的主仓** —— 存在性检查照样通过，而派发进去
-  就直接改了主干。
-- 把任务书当命令行参数传，某些 CLI 会**立刻返回**：日志几个字节、**退出码 0**，任何监视器都会
-  把它报成成功。
-- 上游鉴权失败写出的是一份**完整**哨兵，所以它报 `DONE` 而不是 `DEAD`。
-- `git rebase` **不触发** pre-commit 钩子，所以「rebase 之后门禁是绿的」是一句空话 —— 而两边的
-  提交时间戳看起来都很正常。
-- 静态门禁全绿和测试红完全可以共存，只要你是靠 grep import 来取消费面的。
-- 而一个什么都没锁住的锁，绿得和真锁一模一样。
-
-这里的每一道防线，都是因为上面某一件事真的发生过。
-
-## 快速开始
+## 安装
 
 ```bash
-# 1. 为这次工作单独开一棵 worktree（永远不要往主干派）
-git worktree add ../wt-feature -b feature/thing
-
-# 2. 写任务书（templates/ 下有实现与复核两种起手模板）
-cp ~/.agents/skills/agent-delegation/templates/brief.md /tmp/brief.md
-$EDITOR /tmp/brief.md
-
-# 3. 派发。模型是必填的 —— 本 skill 不内置任何模型 id
-export AGENT_MODEL=<你的模型 id>
-scripts/dispatch.sh --agent codex --name fixthing \
-                    --worktree ../wt-feature --brief /tmp/brief.md
-
-# 4. 一条命令看遍所有 agent 的所有运行
-scripts/watch.sh
-# DONE codex/fixthing exit=0 result=12268
-# RUNNING cursor/probe log=48213
-
-# 5. 读交付物 —— 通知只是指针，不是内容
-cat ../.agent-runs/codex/fixthing.out
-
-# 6. 复核方的结论【就是】下一件事时：续跑它的会话，别重新写一份任务书
-scripts/relay.sh --agent codex --from review1 --name fix1 \
-                 --worktree ../wt-feature --brief /tmp/fix.md
+npx skills add shaokeyibb/agent-delegation
 ```
 
-PowerShell 用户：每个脚本都有同名 `.ps1`，参数一致
-（`dispatch.ps1 -Agent codex -Name fixthing -Worktree ..\wt-feature -Brief brief.md`）。
+常用参数：`-g` 装到用户目录而不是当前项目，`-a claude-code`（可重复）指定 agent，`-y` 跳过确认。
+
+```bash
+npx skills add shaokeyibb/agent-delegation -g -a claude-code -y
+```
+
+## 使用
+
+**没有什么需要你去执行。** Skill 会在相关时自己加载 —— 你只管跟 agent 说事，它自己会用上：
+
+> 「这个重构要好几个小时，开棵 worktree 派给 codex，回头再看。」
+
+> 「codex 那边报 DONE，但我没看到任何产出。怎么回事？」
+
+> 「复核方找出了三个真 bug，让它直接去修，别再写一份新任务书了。」
+
+> 「它说自己加了四条锁。合入前先验一下。」
+
+这四句分别落在 Skill 的不同部分：派发、诊断「报成功却没产出」的运行、把复核方续跑成修复方、
+以及逼它把声称锁住的东西打破并展示变红。
 
 ### 配置
+
+在 agent 派发之前先设好模型 —— **本 Skill 不内置任何模型 id**，因为 id 会变，而一个过期的默认值
+**失败得很晚，看起来像任务问题而不是配置问题**。
 
 | 变量 | 含义 |
 |---|---|
 | `AGENT_MODEL` | 所有通路共用的模型 id |
 | `AGENT_MODEL_<AGENT>` | 单条通路覆盖，例如 `AGENT_MODEL_CODEX` |
 | `AGENT_RUNS` | 哨兵目录（默认 `<repo>/.agent-runs/<agent>/`） |
-| `AGENT_WATCH_INTERVAL` | `watch-loop.sh` 的轮询秒数（默认 20） |
+| `AGENT_WATCH_INTERVAL` | 监视器轮询秒数（默认 20） |
 
-## 唯一的那条规矩，其余都在为它服务
+自带的脚本就是普通的 bash 与 PowerShell —— 由你的 agent 调用，但你想手动跑也完全可以，
+不需要任何 agent host。
+
+## 你的 agent 会学到什么
+
+**四条 CLI，一个接口。** `codex`、`cursor-agent`、`codebuddy`、`claude` 之间的差异，弄错了会
+**静默失败** —— 只有一个是从 stdin 收任务书的，另外三个你要是把大段任务书当命令行参数传，
+它们会**立刻返回、退出码 0**。这个 Skill 把这些差异抹平。
+
+**一份可以读、而不是只能信的哨兵。** 每次运行都写 `.before`（树快照）、`.log`、`.out`（交付物），
+以及 `.exit` —— 它**最后**才写，所以它的存在本身就是完成信号。`.out` 为空就是失败，
+不管退出码说什么。
+
+**一条规矩，其余都在为它服务：**
 
 > **改了代码的那一次运行，永远不是给它签字的那一次。**
 
-派**新的**运行去复核工作。把**复核方**续跑成修复方是可以的 —— 因为它的复核在拿到写权限之前
-就已经写完并落盘了。但再续跑一次让它给自己的修复背书，就不行。
+把**复核方**续跑成修复方是可以的 —— 它的复核在拿到写权限之前就已经写完并落盘了。
+但再续跑一次让它给自己的修复背书，就不行。
 
-## 什么场景下最划算
+**怎样不轻信一片绿的测试。** 一个什么都没锁住的锁，绿得和真锁一模一样。所以这个 Skill 会让 agent
+去**打破那个不变量并展示它变红**，还要附 `git diff` 证明变异真的落到了文件上。
 
-**你装不进上下文的长重构。** 派出去、去做别的事、几小时后回来收货：拿现在的树对比派发那一刻
-的快照 —— 一次悄悄装了 100 MB 依赖的运行，没法给你看一棵干净的树。
+## 为什么会有它
 
-**不是走过场的复核。** 复核模板要求：把声称锁住的东西**打破**，并展示它变红，还要附
-`git diff` 证明变异真的落到了文件上。它问的也是本源问题，而不是那个方便的代理指标 ——
-*这条锁守的是哪个不变量？破坏它，有没有东西变红？* 数「要改几个地方」这种问法，对每一条
-字符串断言都答「两个」，对每一条等值锁也都答「两个」。
+把后台工作者启动起来是容易的，难的全在启动之后 —— 这里的每一道防线，都是因为它所防的那件事
+真的发生过：
 
-**并行时有一本诚实的账。** 多个 agent 跑在多棵 worktree 上；`watch.sh` 对全部运行各输出一行，
-并且能分开**跑完了但没产出**、**死在鉴权上**、**还在跑**这三种状态 —— 否则它们长得一模一样。
+- 一棵 `.git` 指针丢失的 worktree 会**向上解析到主仓** —— 存在性检查照样通过，
+  而派发进去就直接改了主干。
+- 上游鉴权失败写出的是一份**完整**哨兵，所以它报 `DONE` 而不是 `DEAD`，
+  唯一的信号是交付物为空。
+- `git rebase` **不触发** pre-commit 钩子，所以「rebase 之后门禁是绿的」是一句空话 ——
+  而且 rebase 保留 author date，时间戳看起来完全正常。
+- 在移动的主干上做 `reset --soft`，暂存区可能悄悄含进**反转别人提交**的改动，而且不会有任何红灯。
+- 静态门禁全绿和测试红完全可以共存，只要你是靠 grep import 来取消费面的。
 
-**抓住你自己任务书写错的地方。** 每份任务书都以「告诉我这份任务书哪里写错了」收尾。那些反驳
-经常是对的，偶尔则是自信地错的 —— 所以本 skill 还告诉你要去核它：凡是一条命令能核的，自己核。
-
-## 目录结构
+## 里面有什么
 
 ```
-agent-delegation/
-├── SKILL.md              操作指南（主要内容在这里）
-├── README.md / README.zh-CN.md
-├── LICENSE               MIT
-├── scripts/
-│   ├── dispatch.sh/.ps1  派发（preflight + 哨兵）
-│   ├── relay.sh/.ps1     在原会话里续跑一次已完成的运行
-│   ├── watch.sh          跨全部 agent，每次运行输出一行状态
-│   └── watch-loop.sh     只输出状态变化，供常驻监视器使用
-└── templates/
-    ├── brief.md          实现类任务书
-    └── review.md         只读复核任务书
+SKILL.md              给你的 agent 读的操作指南
+scripts/
+  dispatch.sh/.ps1    派发（preflight + 哨兵）
+  relay.sh/.ps1       在原会话里续跑一次已完成的运行
+  watch.sh            跨全部 agent，每次运行输出一行状态
+  watch-loop.sh       只输出状态变化，供常驻监视器使用
+templates/
+  brief.md            实现类任务书
+  review.md           只读复核任务书
 ```
 
-## 安装
-
-放到任何你的 agent host 会发现 skill 的位置即可 —— 例如放在 `~/.agents/skills/` 再从
-`~/.claude/skills/` 建一个符号链接，或者直接放进 `~/.claude/skills/`。脚本本身是独立的：
-不需要任何 host，手动也能跑。
+两种 shell 一视同仁：每个脚本都有行为一致的 `.sh` 与 `.ps1` 两份。
 
 ## 许可
 
