@@ -98,7 +98,10 @@ switch ($Agent) {
         $lines += "`$code = `$LASTEXITCODE"
     }
     'codebuddy' {
-        $perm = if ($ReadOnly) { "" } else { "`$a += '-y'; " }
+        # -y alone is not enough: its own help says HIGH/CRITICAL still prompt, and under -p
+        # there is nobody to answer, so those operations are silently denied and the run looks
+        # read-only. bypassPermissions is the CLI's own full-pass mode.
+        $perm = if ($ReadOnly) { "" } else { "`$a += @('-y','--permission-mode','bypassPermissions'); " }
         $lines += "`$prompt = [IO.File]::ReadAllText('$pointerFile')"
         $lines += "`$a = @('-p','--output-format','text','--model','$Model')"
         $lines += "$perm& codebuddy @a `$prompt *> '$log'"
